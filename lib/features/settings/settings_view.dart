@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:qrscanner/common_component/custom_app_bar.dart';
 import 'package:qrscanner/common_component/custom_button.dart';
 import 'package:qrscanner/common_component/custom_text_field.dart';
 import 'package:qrscanner/constant.dart';
@@ -17,30 +16,27 @@ class SettingsView extends StatelessWidget {
     return BlocProvider(
       create: (context) => SettingsController()..loadCurrentSettings(),
       child: Scaffold(
-        body: Container(
-          decoration: containerDecoration,
+        backgroundColor: Colors.white,
+        appBar: AppBar(
+          title: const Text('Settings'),
+          foregroundColor: Colors.white,
+          centerTitle: true,
+          backgroundColor: colorPrimary,
+        ),
+        body: SafeArea(
           child: ListView(
             children: [
-              const CustomAppBar(text: 'Settings'),
-              Container(
-                height: MediaQuery.of(context).size.height,
-                padding: EdgeInsets.only(
-                  top: MediaQuery.of(context).size.height * 0.06,
-                  left: 20,
-                  right: 20,
-                ),
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.only(
-                    topRight: Radius.circular(20),
-                    topLeft: Radius.circular(20),
-                  ),
-                ),
-                child: BlocBuilder<SettingsController, SettingsStates>(
-                  builder: (context, state) {
-                    final controller = SettingsController.of(context);
+              // const CustomAppBar(text: 'Settings'),
+              BlocBuilder<SettingsController, SettingsStates>(
+                builder: (context, state) {
+                  final controller = SettingsController.of(context);
 
-                    return Form(
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 15.0,
+                      horizontal: 22,
+                    ),
+                    child: Form(
                       key: controller.formKey,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -53,7 +49,6 @@ class SettingsView extends StatelessWidget {
                               color: colorPrimary,
                             ),
                           ),
-                          const SizedBox(height: 10),
 
                           // -------- Text Field --------
                           CustomTextField(
@@ -144,9 +139,9 @@ class SettingsView extends StatelessWidget {
                           ),
                         ],
                       ),
-                    );
-                  },
-                ),
+                    ),
+                  );
+                },
               ),
             ],
           ),

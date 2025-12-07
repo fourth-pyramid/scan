@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:network_info_plus/network_info_plus.dart';
-import 'package:qrscanner/common_component/snack_bar.dart';
 import 'package:qrscanner/core/appStorage/app_storage.dart';
 import 'package:qrscanner/core/dioHelper/dio_helper.dart';
 import 'package:qrscanner/features/settings/settings_states.dart';
@@ -32,13 +31,13 @@ class SettingsController extends Cubit<SettingsStates> {
 
       if (wifiIP != null && wifiIP.isNotEmpty) {
         ipController.text = '$wifiIP:8000';
-        showSnackBar('IP detected: $wifiIP');
+        // showSnackBar('IP detected: $wifiIP');
         emit(SettingsLoaded());
       } else {
-        showSnackBar('Could not detect IP. Check Wi-Fi.');
+        // showSnackBar('Could not detect IP. Check Wi-Fi.');
       }
     } catch (e) {
-      showSnackBar('Error getting IP: $e');
+      // showSnackBar('Error getting IP: $e');
     }
   }
 
@@ -52,7 +51,7 @@ class SettingsController extends Cubit<SettingsStates> {
       AppStorage.cacheBaseUrl(baseUrl);
       DioHelper.updateBaseUrl(baseUrl);
 
-      showSnackBar('Using default production server.');
+      // showSnackBar('Using default production server.');
       emit(SettingsSaved());
       return;
     }
@@ -63,7 +62,7 @@ class SettingsController extends Cubit<SettingsStates> {
       AppStorage.cacheBaseUrl(baseUrl);
       DioHelper.updateBaseUrl(baseUrl);
 
-      showSnackBar('Local server saved successfully!');
+      // showSnackBar('Local server saved successfully!');
       emit(SettingsSaved());
       return;
     }
@@ -75,7 +74,7 @@ class SettingsController extends Cubit<SettingsStates> {
     AppStorage.cacheBaseUrl(baseUrl);
     DioHelper.updateBaseUrl(baseUrl);
 
-    showSnackBar('Production server saved.');
+    // showSnackBar('Production server saved.');
     emit(SettingsSaved());
   }
 

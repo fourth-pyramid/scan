@@ -1,3 +1,5 @@
+// ignore_for_file: use_build_context_synchronously
+
 import 'dart:io';
 
 import 'package:camera/camera.dart';
@@ -63,7 +65,7 @@ class _QrCameraPageState extends State<QrCameraPage> {
 
       final controller = CameraController(
         camera,
-        ResolutionPreset.high,
+        ResolutionPreset.max,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );

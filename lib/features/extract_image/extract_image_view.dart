@@ -93,7 +93,7 @@ class _ExtractImageViewState extends State<ExtractImageView> {
                     // CAMERA BUTTON
                     // -------------------------------------------------------
                     SizedBox(
-                      height: 62,
+                      height: 70,
                       child: CustomButton(
                         isIcon: true,
                         icon: const Icon(Icons.camera_alt, color: Colors.white),
@@ -125,17 +125,21 @@ class _ExtractImageViewState extends State<ExtractImageView> {
                               borderRadius: BorderRadius.circular(4.0),
                             ),
                             focusedBorder: OutlineInputBorder(
-                              borderSide: BorderSide(
-                                color: colorPrimary,
-                                width: 2.0,
-                              ),
-                              borderRadius: BorderRadius.circular(4.0),
+                              borderSide: BorderSide(color: colorPrimary),
+                              borderRadius: BorderRadius.circular(6.0),
                             ),
-                            isDense: true,
+                            isDense: false,
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 20,
+                              horizontal: 12,
+                            ),
                             labelText: 'No Pin',
                           ),
                           keyboardType: TextInputType.number,
-                          style: TextStyle(color: Colors.grey.shade600),
+                          style: TextStyle(
+                            color: Colors.grey.shade800,
+                            fontSize: 22,
+                          ),
                         );
                       },
                     ),
@@ -167,11 +171,18 @@ class _ExtractImageViewState extends State<ExtractImageView> {
                               ),
                               borderRadius: BorderRadius.circular(4.0),
                             ),
-                            isDense: true,
+                            isDense: false,
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 20,
+                              horizontal: 12,
+                            ),
                             labelText: 'Serial',
                           ),
                           keyboardType: TextInputType.number,
-                          style: TextStyle(color: Colors.grey.shade600),
+                          style: TextStyle(
+                            color: Colors.grey.shade800,
+                            fontSize: 22,
+                          ),
                         );
                       },
                     ),

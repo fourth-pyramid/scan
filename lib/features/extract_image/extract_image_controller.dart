@@ -162,17 +162,17 @@ class ExtractImageController extends Cubit<ExtractImageStates> {
 
   // تطبيع الأرقام المتشابهة - optimized for speed
   static const _normalizationMap = {
-    // 'O': '0',
-    // 'o': '0',
-    // 'S': '5',
-    // 's': '5',
-    // 'G': '6',
-    // 'g': '6',
-    // 'B': '8',
-    // 'I': '1',
-    // 'l': '1',
-    // 'Z': '2',
-    // 'z': '2',
+    'O': '0',
+    'o': '0',
+    'S': '5',
+    's': '5',
+    'G': '6',
+    'g': '9',
+    'B': '8',
+    'I': '1',
+    'l': '1',
+    'Z': '2',
+    'z': '2',
   };
 
   String _normalizeDigits(String input) {
@@ -779,7 +779,7 @@ class ExtractImageController extends Cubit<ExtractImageStates> {
       historyCount = dataList.length;
       emit(ScanPinSuccess());
     } catch (e) {
-      print('History count error: $e');
+      debugPrint('History count error: $e');
     }
   }
 
@@ -817,11 +817,11 @@ class ExtractImageController extends Cubit<ExtractImageStates> {
         emit(ScanSuccess());
       } else {
         showSnackBar(data['massage'] ?? 'حدث خطأ ما');
-        print(data['massage']);
+        debugPrint(data['massage']);
         emit(ScanError());
       }
     } catch (error) {
-      print(error);
+      debugPrint(error.toString());
       emit(ScanError());
     }
   }
@@ -854,7 +854,7 @@ String? _grayscaleInIsolate(Map<String, String> params) {
     // حفظ مباشرة
     final outputPath =
         '$outputDir/gray_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final outputBytes = img.encodeJpg(processed, quality: 90);
+    final outputBytes = img.encodeJpg(processed);
     File(outputPath).writeAsBytesSync(outputBytes, flush: true);
 
     return outputPath;
