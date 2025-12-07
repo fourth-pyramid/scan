@@ -1,0 +1,59 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  strong-mode:
+    implicit-casts: false
+    implicit-dynamic: false
+
+
+
+
+linter:
+  rules:
+    # ======== STRUCTURE & CLEAN CODE ========
+    always_use_package_imports: true
+    avoid_relative_lib_imports: true
+    prefer_single_quotes: true
+    require_trailing_commas: true
+    sort_pub_dependencies: true
+    avoid_classes_with_only_static_members: true
+    avoid_unused_constructor_parameters: true
+
+    # ======== NULL SAFETY & TYPES ========
+    always_declare_return_types: true
+    # avoid_dynamic_calls: true
+    # avoid_annotating_with_dynamic: true
+    avoid_returning_null: true
+    avoid_type_to_string: true
+    avoid_types_on_closure_parameters: false
+    omit_local_variable_types: false
+    # type_annotate_public_apis: true
+
+    # ======== PERFORMANCE ========
+    prefer_final_locals: true
+    prefer_final_fields: true
+    unnecessary_await_in_return: true
+    unnecessary_lambdas: true
+    avoid_unnecessary_containers: true
+    sized_box_for_whitespace: true
+    use_rethrow_when_possible: true
+
+    # ======== UI & FLUTTER BEST PRACTICES ========
+    prefer_const_constructors: true
+    prefer_const_literals_to_create_immutables: true
+    prefer_const_declarations: true
+    avoid_print: true
+    avoid_single_cascade_in_expression_statements: true
+
+    # ======== SAFETY & ROBUSTNESS ========
+    cancel_subscriptions: true
+    close_sinks: true
+    no_logic_in_create_state: true
+    use_key_in_widget_constructors: true
+    use_build_context_synchronously: true
+
+    # ======== MISC ========
+    avoid_function_literals_in_foreach_calls: true
+    avoid_empty_else: true
+    avoid_redundant_argument_values: true
+    use_full_hex_values_for_flutter_colors: true
