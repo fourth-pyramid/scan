@@ -19,10 +19,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   HttpOverrides.global = MyHttpOverrides();
 
-  // Initialize storage
   await AppStorage.init();
 
-  // Initialize base URL from storage (or use default)
   DioHelper.initBaseUrl();
 
   runApp(const MyApp());
