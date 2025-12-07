@@ -1,21 +1,39 @@
-# qrscanner
+# 📱 QR Scanner App
 
-A new Flutter project.
+تطبيق **QR Scanner** مبني باستخدام Flutter، يوفّر تجربة سريعة وسهلة لمسح أكواد QR وإدارة الإعدادات الخاصة بالمستخدم.  
+التطبيق مصمّم بواجهة بسيطة وسريعة، ويحتوي على إعدادات متقدمة وتجربة استخدام انسيابية.
 
-## Getting Started
+---
 
-This project is a starting point for a Flutter application.
+## 🚀 المميزات
 
-A few resources to get you started if this is your first Flutter project:
+- 🔍 **مسح QR Codes بسرعة عالية**
+- ⚙️ **شاشة إعدادات كاملة**
+- 🌐 **التعامل مع APIs باستخدام Dio**
+- 💾 **تخزين محلي باستخدام AppStorage**
+- 🎨 **تصميم أنيق بخط Tajwal**
+- 🧩 **تنظيم معماري واضح وسهل التوسّع**
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+---
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
-# scan
-# scan
-# qr-scan
-# scan
-# scan
+## 🏗️ **التقنيات المستخدمة**
+
+- **Flutter** (Dart)
+- **Dio HTTP Client**
+- **Local Storage**
+- **Custom Navigation Router**
+
+---
+
+## 📂 **هيكلة المشروع**
+
+```plaintext
+lib/
+ ├── core/
+ │    ├── appStorage/
+ │    ├── dioHelper/
+ │    └── router/
+ ├── features/
+ │    └── settings/
+ ├── constant.dart
+ └── main.dart
