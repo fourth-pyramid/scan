@@ -1,11 +1,9 @@
-import 'dart:collection';
 import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
@@ -17,9 +15,6 @@ import 'package:qrscanner/features/extract_image/extact_image_states.dart';
 import 'package:qrscanner/features/extract_image/qr_camera_page.dart';
 
 // Cached regex patterns for performance
-final _digitRegex = RegExp(r'\d{11,16}');
-final _digitOnlyRegex = RegExp(r'[^0-9]');
-final _sixOrZeroRegex = RegExp(r'^[60]');
 
 class ExtractImageController extends Cubit<ExtractImageStates> {
   ExtractImageController(this.scanType) : super(ExtractInitial());
@@ -31,50 +26,14 @@ class ExtractImageController extends Cubit<ExtractImageStates> {
   final String? scanType;
 
   final _textRecognizer = TextRecognizer();
-  final _pinCandidates = <String, int>{};
-  final _serialCandidates = <String, int>{};
-
-  // تحميل صور رقم 6 المرجعية (تنسيقات متعددة)
-  final List<img.Image> _template6Variants = [];
-
-  // Cache for luminance calculations
-  late List<int> _luminanceCache;
 
   bool textScanned = false;
   File? image;
   File? scanImage;
 
-  Future<void> _loadTemplate6() async {
-    if (_template6Variants.isNotEmpty) return;
-
-    const templatePaths = [
-      'assets/digit_templates/num_6.jpeg',
-      'assets/digit_templates/num_6_b.jpg',
-      'assets/digit_templates/num_6_b.png',
-    ];
-
-    for (final path in templatePaths) {
-      try {
-        final bytes = await rootBundle.load(path);
-        final decoded = img.decodeImage(bytes.buffer.asUint8List());
-        if (decoded == null) continue;
-
-        _template6Variants.add(_prepareForMatching(decoded));
-      } catch (e) {
-        // في حالة فشل التحميل لمسار معين، نتابع باقي المسارات
-        continue;
-      }
-    }
-  }
-
   // ============== معالجة الصورة ==============
   Future<void> getImage(BuildContext context) async {
     try {
-      // تحميل template رقم 6 إذا لم يكن محمل
-      if (_template6Variants.isEmpty) {
-        await _loadTemplate6();
-      }
-
       if (!context.mounted) return;
       final capturedFile = await QrCameraPage.capture(context);
 
@@ -93,32 +52,64 @@ class ExtractImageController extends Cubit<ExtractImageStates> {
         return;
       }
 
-      // تحويل لـ Grayscale مباشرة بعد التصوير
-      final dir = await getApplicationDocumentsDirectory();
-      final grayscalePath = await _convertToGrayscaleAndSave(
-        capturedPath,
-        dir.path,
-      );
-
-      if (grayscalePath == null || !await File(grayscalePath).exists()) {
-        showSnackBar('خطأ في معالجة الصورة', color: Colors.red);
-        emit(ImagePickedError());
-        return;
-      }
-
       _resetState();
-      image = File(grayscalePath);
-      scanImage = image;
-      emit(ImagePickedSuccess());
 
       // معالجة OCR متعددة المحاولات
-      await _performOcrAttempts(grayscalePath);
-      _selectBestResults();
+      final dir = await getApplicationDocumentsDirectory();
+      String? firstProcessed;
+      final List<DetectedNumber> allNumbers = [];
+      final processFutures = <Future<Map<String, dynamic>>>[];
+      for (int i = 0; i < 3; i++) {
+        processFutures.add(_processStrategy(capturedPath, dir.path, i));
+      }
+      final results = await Future.wait(processFutures);
+      final toDelete = <File>[];
+      for (int i = 0; i < results.length; i++) {
+        final result = results[i];
+        final path = result['path'] as String?;
+        final numbers = result['numbers'] as List<DetectedNumber>;
+        allNumbers.addAll(numbers);
+        if (path != null) {
+          if (i == 0) {
+            firstProcessed = path;
+          } else {
+            toDelete.add(File(path));
+          }
+        }
+      }
+      await Future.wait(toDelete.map((f) => f.delete()));
+
+      if (firstProcessed != null) {
+        image = File(firstProcessed);
+        scanImage = image;
+        emit(ImagePickedSuccess());
+      }
+
+      // Consolidate and find best matches
+      final consolidated = _consolidateNumbers(allNumbers);
+      _assignBestMatches(consolidated);
     } catch (e) {
       _resetState();
       showSnackBar('خطأ في تصوير الكارت', color: Colors.red);
       emit(ImagePickedError());
     }
+  }
+
+  Future<Map<String, dynamic>> _processStrategy(
+    String sourcePath,
+    String outputDir,
+    int strategy,
+  ) async {
+    final path = await _preprocessAndSave(
+      sourcePath,
+      outputDir,
+      strategy: strategy,
+    );
+    if (path == null) {
+      return {'path': null, 'numbers': <DetectedNumber>[]};
+    }
+    final numbers = await _extractNumbers(path);
+    return {'path': path, 'numbers': numbers};
   }
 
   void _resetState() {
@@ -127,637 +118,291 @@ class ExtractImageController extends Cubit<ExtractImageStates> {
     scanImage = null;
     pin.clear();
     serial.clear();
-    _pinCandidates.clear();
-    _serialCandidates.clear();
   }
 
   // تحويل الصورة لـ Grayscale مباشرة (في Isolate للسرعة)
-  Future<String?> _convertToGrayscaleAndSave(
+  Future<String?> _preprocessAndSave(
     String sourcePath,
-    String outputDir,
-  ) async {
+    String outputDir, {
+    required int strategy,
+  }) async {
     try {
-      debugPrint('🔄 Converting to Grayscale...');
+      debugPrint('🔄 Preprocessing with strategy $strategy...');
 
       // استخدام compute للمعالجة في background
-      final result = await compute(_grayscaleInIsolate, {
+      final result = await compute(_preprocessInIsolate, {
         'sourcePath': sourcePath,
         'outputDir': outputDir,
+        'strategy': strategy,
       });
 
       if (result != null) {
-        debugPrint('✅ Grayscale conversion completed');
+        debugPrint('✅ Preprocessing completed for strategy $strategy');
       }
       return result;
     } catch (e) {
-      debugPrint('❌ Error converting to grayscale: $e');
+      debugPrint('❌ Error preprocessing: $e');
       return null;
     }
   }
 
-  Future<void> _performOcrAttempts(String imagePath) async {
-    // OCR مباشرة على الصورة (بدون enhancement إضافي)
-    await _performOcr(imagePath, emitScanning: true);
-  }
-
-  // تطبيع الأرقام المتشابهة - optimized for speed
-  static const _normalizationMap = {
-    'O': '0',
-    'o': '0',
-    'S': '5',
-    's': '5',
-    'G': '6',
-    'g': '9',
-    'B': '8',
-    'I': '1',
-    'l': '1',
-    'Z': '2',
-    'z': '2',
-  };
-
-  String _normalizeDigits(String input) {
-    final sb = StringBuffer();
-    for (final char in input.split('')) {
-      sb.write(_normalizationMap[char] ?? char);
-    }
-    return sb.toString();
-  }
-
-  String _cleanText(String text) {
-    return _normalizeDigits(text).replaceAll(_digitOnlyRegex, '');
-  }
-
-  // استخراج الأرقام من النص - optimized with early exit
-  static const _vatKeywords = ['VAT', 'TAX', 'TAXNO', 'ضريب'];
-
-  List<String> _extractNumbers(List<TextBlock> blocks) {
-    final numbers = <String>{};
-
-    for (final block in blocks) {
-      final blockTextUpper = block.text.toUpperCase();
-      if (_vatKeywords.any(blockTextUpper.contains)) continue;
-
-      final cleaned = _cleanText(block.text);
-      if (cleaned.length >= 10 && !cleaned.startsWith('300')) {
-        numbers.add(cleaned);
+  Future<List<DetectedNumber>> _extractNumbers(String imagePath) async {
+    final inputImage = InputImage.fromFilePath(imagePath);
+    final RecognizedText recognizedText = await _textRecognizer.processImage(
+      inputImage,
+    );
+    final List<DetectedNumber> numbers = [];
+    final imageHeight = recognizedText.blocks.isNotEmpty
+        ? recognizedText.blocks
+              .map((b) => b.boundingBox.bottom)
+              .reduce(math.max)
+        : 1.0;
+    for (TextBlock block in recognizedText.blocks) {
+      for (TextLine line in block.lines) {
+        final yPosition = line.boundingBox.top;
+        final relativeY = yPosition / imageHeight;
+        // Process the line text
+        final String originalText = line.text;
+        final String cleaned = _aggressiveClean(originalText);
+        if (cleaned.length >= 10) {
+          numbers.add(
+            DetectedNumber(
+              value: cleaned,
+              originalText: originalText,
+              yPosition: relativeY,
+              confidence: _calculateDetailedConfidence(
+                cleaned,
+                originalText,
+                relativeY,
+              ),
+              length: cleaned.length,
+            ),
+          );
+        }
+        // Also try to extract numbers from individual elements
+        for (TextElement element in line.elements) {
+          final String elemCleaned = _aggressiveClean(element.text);
+          if (elemCleaned.length >= 4) {
+            numbers.add(
+              DetectedNumber(
+                value: elemCleaned,
+                originalText: element.text,
+                yPosition: relativeY,
+                confidence:
+                    _calculateDetailedConfidence(
+                      elemCleaned,
+                      element.text,
+                      relativeY,
+                    ) *
+                    0.8,
+                length: elemCleaned.length,
+              ),
+            );
+          }
+        }
       }
     }
-
-    return numbers.toList();
+    return numbers;
   }
 
-  // استخراج مع التصحيحات - optimized for batch processing
-  List<String> _extractCorrectedNumbers(
-    List<TextBlock> blocks,
-    Map<String, String> corrections,
+  String _aggressiveClean(String text) {
+    // Remove spaces and common separators
+    String cleaned = text.replaceAll(RegExp(r'[\s\-_.,]'), '');
+    // Fix common OCR mistakes
+    cleaned = cleaned
+        .replaceAll('O', '0')
+        .replaceAll('o', '0')
+        .replaceAll('Q', '0')
+        .replaceAll('D', '0')
+        .replaceAll('I', '1')
+        .replaceAll('l', '1')
+        .replaceAll('i', '1')
+        .replaceAll('|', '1')
+        .replaceAll('!', '1')
+        .replaceAll('Z', '2')
+        .replaceAll('z', '2')
+        .replaceAll('S', '5')
+        .replaceAll('s', '5')
+        .replaceAll('G', '6')
+        .replaceAll('b', '6')
+        .replaceAll('B', '8');
+    // Keep only digits
+    cleaned = cleaned.replaceAll(RegExp(r'[^0-9]'), '');
+    return cleaned;
+  }
+
+  double _calculateDetailedConfidence(
+    String cleaned,
+    String original,
+    double yPosition,
   ) {
-    final numbers = <String>{};
+    double confidence = 0.0;
+    // Length scoring
+    if (cleaned.length == 14) {
+      confidence += 35.0; // PIN length
+    } else if (cleaned.length == 12) {
+      confidence += 30.0; // Serial length
+    } else if (cleaned.length >= 10 && cleaned.length <= 15) {
+      confidence += 15.0;
+    }
+    // All digits bonus
+    if (RegExp(r'^\d+$').hasMatch(cleaned)) {
+      confidence += 25.0;
+    }
+    // Minimal cleaning needed
+    final double cleaningRatio =
+        cleaned.length / original.replaceAll(RegExp(r'[\s\-_.,]'), '').length;
+    confidence += cleaningRatio * 15.0;
+    // Position bonus
+    if (yPosition < 0.4) {
+      confidence += 10.0; // Upper part (likely PIN)
+    } else if (yPosition > 0.6) {
+      confidence += 8.0; // Lower part (likely Serial)
+    }
+    // Pattern validation
+    if (_isValidPattern(cleaned)) {
+      confidence += 15.0;
+    }
+    return confidence;
+  }
 
-    for (final block in blocks) {
-      bool skipBlock = false;
+  bool _isValidPattern(String number) {
+    if (number.isEmpty || number.length < 10) return false;
+    // Check for reasonable digit distribution
+    final Map<String, int> digitCount = {};
+    for (var digit in number.split('')) {
+      digitCount[digit] = (digitCount[digit] ?? 0) + 1;
+    }
+    // No single digit should appear more than 50% of the time
+    final int maxCount = digitCount.values.reduce(math.max);
+    if (maxCount > number.length * 0.5) return false;
+    // Should have at least 5 different digits
+    if (digitCount.length < 5) return false;
+    return true;
+  }
 
-      for (final line in block.lines) {
-        final normalizedLine = line.elements
-            .map((e) => _normalizedElementText(e, corrections))
-            .join();
-
-        final normalizedUpper = normalizedLine.toUpperCase();
-        if (_vatKeywords.any(normalizedUpper.contains)) {
-          skipBlock = true;
+  List<DetectedNumber> _consolidateNumbers(List<DetectedNumber> allNumbers) {
+    // Group similar numbers
+    final Map<String, List<DetectedNumber>> groups = {};
+    for (var number in allNumbers) {
+      bool foundGroup = false;
+      for (var key in groups.keys) {
+        if (_areSimilar(key, number.value)) {
+          groups[key]!.add(number);
+          foundGroup = true;
           break;
         }
-
-        // Extract matches directly without storing intermediate lines
-        for (final match in _digitRegex.allMatches(normalizedLine)) {
-          final candidate = match.group(0);
-          if (candidate != null && !candidate.startsWith('300')) {
-            numbers.add(candidate);
-          }
-        }
-
-        final cleaned = _cleanText(normalizedLine);
-        if (cleaned.length >= 10 && !cleaned.startsWith('300')) {
-          numbers.add(cleaned);
-        }
       }
-
-      if (skipBlock) break;
-    }
-
-    return numbers.toList();
-  }
-
-  // OCR الرئيسي - محسّن للسرعة والدقة
-  Future<bool> _performOcr(
-    String imagePath, {
-    bool emitScanning = false,
-  }) async {
-    if (emitScanning) emit(Scanning());
-
-    final inputImage = InputImage.fromFilePath(imagePath);
-    final recognizedText = await _textRecognizer.processImage(inputImage);
-
-    // استخراج سريع من النص الكامل أولاً
-    final numbers = <String>{};
-    final normalizedText = _normalizeDigits(recognizedText.text);
-
-    for (final match in _digitRegex.allMatches(normalizedText)) {
-      final num = match.group(0)!;
-      if (!num.startsWith('300')) numbers.add(num);
-    }
-
-    // استخراج من البلوكات إذا لم نجد نتائج كافية
-    if (numbers.length < 3) {
-      numbers.addAll(_extractNumbers(recognizedText.blocks));
-    }
-
-    // تصحيح 5→6 بشكل انتقائي - check in single pass
-    bool needsCorrection = false;
-    for (final num in numbers) {
-      if (num.contains('5') && num.length >= 13 && num.length <= 15) {
-        needsCorrection = true;
-        break;
+      if (!foundGroup) {
+        groups[number.value] = [number];
       }
     }
-
-    if (needsCorrection) {
-      final corrections = await _detectSixCorrections(
-        recognizedText,
-        imagePath,
-      );
-      if (corrections.isNotEmpty) {
-        numbers.addAll(
-          _extractCorrectedNumbers(recognizedText.blocks, corrections),
-        );
-      }
-    }
-
-    // Sort in-place instead of creating new list
-    final allNumbers = numbers.toList();
-    allNumbers.sort((a, b) => b.length.compareTo(a.length));
-
-    // البحث المباشر
-    final detectedPin = _findPIN(allNumbers);
-    final detectedSerial = _findSerial(allNumbers, detectedPin);
-
-    // Update candidates map and track if we have results
-    if (detectedPin != null) {
-      _pinCandidates[detectedPin] = (_pinCandidates[detectedPin] ?? 0) + 1;
-      if (detectedSerial != null) {
-        _serialCandidates[detectedSerial] =
-            (_serialCandidates[detectedSerial] ?? 0) + 1;
-      }
-      textScanned = true;
-      return true;
-    }
-
-    if (detectedSerial != null) {
-      _serialCandidates[detectedSerial] =
-          (_serialCandidates[detectedSerial] ?? 0) + 1;
-      textScanned = true;
-      return true;
-    }
-
-    return false;
-  }
-
-  // البحث عن PIN - محسّن لتفضيل الأرقام المصححة
-  String? _findPIN(List<String> candidates) {
-    String? result14;
-    String? resultGt14;
-    String? result13;
-
-    // Single pass through candidates
-    for (final c in candidates) {
-      // Quick validation
-      if (c.length < 13 || c.length > 18) continue;
-      if (c.startsWith('300')) continue;
-      if (c.startsWith('3') && c.length == 14) continue;
-
-      // Cache results by length - prefer 14
-      if (c.length == 14) {
-        result14 ??= c;
-      } else if (c.length > 14 && resultGt14 == null) {
-        resultGt14 = c;
-      } else if (c.length == 13 && result13 == null) {
-        result13 = c;
-      }
-    }
-
-    // Return in preference order
-    if (result14 != null) return _formatPIN(result14);
-    if (resultGt14 != null) return _formatPIN(resultGt14.substring(0, 14));
-    if (result13 != null) return _formatPIN('0$result13');
-
-    return null;
-  }
-
-  String _formatPIN(String pin) {
-    if (pin.length != 14) return pin;
-    return '${pin.substring(0, 4)} ${pin.substring(4, 7)} ${pin.substring(7, 11)} ${pin.substring(11, 14)}';
-  }
-
-  // البحث عن Serial - optimized single pass
-  String? _findSerial(List<String> candidates, String? excludePin) {
-    String? best;
-    int bestDiff = 999;
-
-    for (final c in candidates) {
-      if (c == excludePin || c.length < 11 || c.length > 13) continue;
-
-      // Skip invalid prefixes
-      if (c.startsWith('300') || c.startsWith('142') || c.startsWith('141')) {
-        continue;
-      }
-
-      final diff = (c.length - 12).abs();
-      if (diff < bestDiff) {
-        best = c;
-        bestDiff = diff;
-      }
-    }
-
-    return best;
-  }
-
-  // تصحيح رقم 5 إلى 6 باستخدام Template Matching
-  Future<Map<String, String>> _detectSixCorrections(
-    RecognizedText recognizedText,
-    String imagePath,
-  ) async {
-    try {
-      if (_template6Variants.isEmpty) return {}; // لو الـ template مش محمل
-
-      final bytes = await File(imagePath).readAsBytes();
-      final decoded = img.decodeImage(bytes);
-      if (decoded == null) return {};
-
-      // الصورة بالفعل grayscale من البداية، لا حاجة للتحويل مرة أخرى
-      final corrections = <String, String>{};
-      int checkedCount = 0;
-      const maxChecks = 32; // توسيع الفحص قليلاً
-
-      // فحص العناصر التي تحتوي على '5' أو '5' الشبيهة
-      for (final block in recognizedText.blocks) {
-        if (checkedCount >= maxChecks) break;
-
-        for (final line in block.lines) {
-          if (checkedCount >= maxChecks) break;
-
-          for (final element in line.elements) {
-            if (checkedCount >= maxChecks) break;
-
-            final rawText = element.text;
-            final trimmed = rawText.trim();
-            if (trimmed.isEmpty) continue;
-
-            final digitPositions = <int>[];
-            for (int i = 0; i < rawText.length; i++) {
-              if (rawText[i].trim().isNotEmpty) {
-                digitPositions.add(i);
-              }
-            }
-
-            if (digitPositions.isEmpty) continue;
-
-            var correctedText = rawText;
-            bool changed = false;
-
-            for (int idx = 0; idx < digitPositions.length; idx++) {
-              if (checkedCount >= maxChecks) break;
-
-              final charIndex = digitPositions[idx];
-              final char = rawText[charIndex];
-
-              final normalizedChar = _normalizeDigits(
-                char,
-              ).replaceAll(RegExp(r'[^0-9]'), '');
-
-              if (normalizedChar != '5') {
-                continue;
-              }
-
-              checkedCount++;
-
-              final charRect = _characterRect(
-                element.boundingBox,
-                idx,
-                digitPositions.length,
-              );
-
-              final crop = _safeCrop(decoded, charRect);
-              if (crop == null || crop.width < 6 || crop.height < 8) {
-                continue;
-              }
-
-              if (_matchesTemplate6(crop)) {
-                correctedText = correctedText.replaceRange(
-                  charIndex,
-                  charIndex + 1,
-                  '6',
-                );
-                changed = true;
-              }
-            }
-
-            if (changed) {
-              corrections[_elementKey(element)] = correctedText;
-            }
-          }
-        }
-      }
-
-      return corrections;
-    } catch (e) {
-      return {};
-    }
-  }
-
-  // مطابقة الصورة مع template رقم 6 (مبسطة للسرعة)
-  bool _matchesTemplate6(img.Image crop) {
-    if (_template6Variants.isEmpty) return false;
-
-    try {
-      final processed = _prepareForMatching(crop);
-      final holeRatio = _holeScore(processed);
-      final tierStrong = holeRatio >= 0.045;
-      final tierMedium = holeRatio >= 0.025;
-
-      double bestScore = 0;
-      final threshold1 = tierStrong ? 0.74 : (tierMedium ? 0.77 : 0.79);
-      final threshold2 = tierStrong ? 0.76 : (tierMedium ? 0.78 : 0.79);
-
-      for (final template in _template6Variants) {
-        final resized = img.copyResize(
-          processed,
-          width: template.width,
-          height: template.height,
-          interpolation: img.Interpolation.linear,
-        );
-
-        final score = _compareTemplates(resized, template);
-        if (score >= 0.79) return true; // Early exit on high confidence
-        if (score >= threshold1) return true;
-        if (score > bestScore) bestScore = score;
-      }
-
-      return bestScore >= threshold2;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  img.Image _prepareForMatching(img.Image source) {
-    var gray = img.grayscale(source);
-
-    const maxDimension = 56;
-    final largestSide = math.max(gray.width, gray.height);
-    if (largestSide > maxDimension) {
-      final scale = maxDimension / largestSide;
-      final targetWidth = math.max(1, (gray.width * scale).round());
-      final targetHeight = math.max(1, (gray.height * scale).round());
-      gray = img.copyResize(
-        gray,
-        width: targetWidth,
-        height: targetHeight,
-        interpolation: img.Interpolation.linear,
+    // Get best from each group
+    final List<DetectedNumber> consolidated = [];
+    for (var group in groups.values) {
+      if (group.isEmpty) continue;
+      // Find consensus value
+      final String consensusValue = _findConsensus(group);
+      // Calculate average confidence
+      final double avgConfidence =
+          group.map((n) => n.confidence).reduce((a, b) => a + b) / group.length;
+      final double avgY =
+          group.map((n) => n.yPosition).reduce((a, b) => a + b) / group.length;
+      consolidated.add(
+        DetectedNumber(
+          value: consensusValue,
+          originalText: group.first.originalText,
+          yPosition: avgY,
+          confidence:
+              avgConfidence +
+              (group.length * 5.0), // Bonus for multiple detections
+          length: consensusValue.length,
+          detectionCount: group.length,
+        ),
       );
     }
-
-    return img.adjustColor(gray, contrast: 5, brightness: 0.8);
+    // Sort by confidence
+    consolidated.sort((a, b) => b.confidence.compareTo(a.confidence));
+    return consolidated;
   }
 
-  double _compareTemplates(img.Image a, img.Image b) {
-    final width = math.min(a.width, b.width);
-    final height = math.min(a.height, b.height);
-    if (width == 0 || height == 0) return 0;
-
-    double diffSum = 0;
-    final count = width * height;
-    final maxDiff = 255.0 * count;
-
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final aLum = img.getLuminance(a.getPixel(x, y)) as int;
-        final bLum = img.getLuminance(b.getPixel(x, y)) as int;
-        diffSum += (aLum - bLum).abs();
-      }
+  bool _areSimilar(String a, String b) {
+    if ((a.length - b.length).abs() > 2) return false;
+    final int minLen = math.min(a.length, b.length);
+    int matches = 0;
+    for (int i = 0; i < minLen; i++) {
+      if (a[i] == b[i]) matches++;
     }
-
-    return 1.0 - (diffSum / maxDiff);
+    // At least 80% similarity
+    return matches >= minLen * 0.8;
   }
 
-  Rect _characterRect(Rect fullRect, int index, int total) {
-    if (total <= 1) return fullRect;
-
-    final segmentWidth = fullRect.width / total;
-    final left = fullRect.left + segmentWidth * index;
-    final expandedLeft = math.max(0, left - segmentWidth * 0.12).toDouble();
-    final expandedRight = (left + segmentWidth + segmentWidth * 0.12)
-        .toDouble();
-    final expandedTop = math
-        .max(0, fullRect.top - fullRect.height * 0.08)
-        .toDouble();
-    final expandedBottom = (fullRect.bottom + fullRect.height * 0.08)
-        .toDouble();
-
-    return Rect.fromLTRB(
-      expandedLeft,
-      expandedTop,
-      expandedRight,
-      expandedBottom,
-    );
+  String _findConsensus(List<DetectedNumber> numbers) {
+    if (numbers.length == 1) return numbers.first.value;
+    // Find the most common value or highest confidence
+    final Map<String, int> frequency = {};
+    for (var num in numbers) {
+      frequency[num.value] = (frequency[num.value] ?? 0) + 1;
+    }
+    final String mostCommon = frequency.entries
+        .reduce((a, b) => a.value > b.value ? a : b)
+        .key;
+    return mostCommon;
   }
 
-  double _holeScore(img.Image image) {
-    final width = image.width;
-    final height = image.height;
-    if (width < 6 || height < 6) return 0;
-
-    final totalPixels = width * height;
-    _luminanceCache = List<int>.filled(totalPixels, 0);
-
-    int minLum = 255;
-    int maxLum = 0;
-
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final idx = y * width + x;
-        final lum = img.getLuminance(image.getPixel(x, y)) as int;
-        _luminanceCache[idx] = lum;
-        if (lum < minLum) minLum = lum;
-        if (lum > maxLum) maxLum = lum;
-      }
-    }
-
-    if (maxLum - minLum < 40) {
-      return 0;
-    }
-
-    final threshold = math.min(255, ((minLum + maxLum) ~/ 2) + 4);
-    final visited = List<bool>.filled(totalPixels, false);
-    final queue = ListQueue<int>();
-
-    bool isWhite(int idx) => _luminanceCache[idx] >= threshold;
-
-    int floodFill(int start) {
-      queue.clear();
-      queue.add(start);
-      visited[start] = true;
-      int size = 0;
-
-      while (queue.isNotEmpty) {
-        final current = queue.removeFirst();
-        size++;
-        final y = current ~/ width;
-        final x = current - y * width;
-
-        if (x > 0) {
-          final next = current - 1;
-          if (!visited[next] && isWhite(next)) {
-            visited[next] = true;
-            queue.add(next);
-          }
-        }
-        if (x < width - 1) {
-          final next = current + 1;
-          if (!visited[next] && isWhite(next)) {
-            visited[next] = true;
-            queue.add(next);
-          }
-        }
-        if (y > 0) {
-          final next = current - width;
-          if (!visited[next] && isWhite(next)) {
-            visited[next] = true;
-            queue.add(next);
-          }
-        }
-        if (y < height - 1) {
-          final next = current + width;
-          if (!visited[next] && isWhite(next)) {
-            visited[next] = true;
-            queue.add(next);
-          }
+  void _assignBestMatches(List<DetectedNumber> numbers) {
+    if (numbers.isEmpty) return;
+    // Find best PIN candidate (14 digits, upper position)
+    DetectedNumber? bestPin;
+    DetectedNumber? bestSerial;
+    for (var number in numbers) {
+      // PIN candidates: 14 digits, preferably upper position
+      if (number.length == 14) {
+        if (bestPin == null ||
+            (number.yPosition < 0.5 &&
+                number.confidence > bestPin.confidence) ||
+            (number.yPosition < bestPin.yPosition &&
+                number.confidence > bestPin.confidence * 0.8)) {
+          bestPin = number;
         }
       }
-
-      return size;
-    }
-
-    // Mark border background
-    for (int x = 0; x < width; x++) {
-      final top = x;
-      final bottom = (height - 1) * width + x;
-      if (!visited[top] && isWhite(top)) floodFill(top);
-      if (!visited[bottom] && isWhite(bottom)) floodFill(bottom);
-    }
-    for (int y = 1; y < height - 1; y++) {
-      final left = y * width;
-      final right = y * width + width - 1;
-      if (!visited[left] && isWhite(left)) floodFill(left);
-      if (!visited[right] && isWhite(right)) floodFill(right);
-    }
-
-    int largestHole = 0;
-
-    for (int idx = 0; idx < totalPixels; idx++) {
-      if (!visited[idx] && isWhite(idx)) {
-        final size = floodFill(idx);
-        if (size > largestHole) largestHole = size;
-      }
-    }
-
-    if (largestHole == 0) return 0;
-
-    return largestHole / totalPixels;
-  }
-
-  String _normalizedElementText(
-    TextElement element,
-    Map<String, String> corrections,
-  ) {
-    final key = _elementKey(element);
-    final text = corrections[key] ?? element.text;
-    return _normalizeDigits(text);
-  }
-
-  String _elementKey(TextElement element) {
-    final rect = element.boundingBox;
-    return '${rect.left.toStringAsFixed(2)}_${rect.top.toStringAsFixed(2)}_${rect.width.toStringAsFixed(2)}_${rect.height.toStringAsFixed(2)}';
-  }
-
-  img.Image? _safeCrop(img.Image source, Rect rect) {
-    final paddingX = rect.width * 0.08;
-    final paddingY = rect.height * 0.08;
-
-    final startX = math.max(0, (rect.left - paddingX).floor());
-    final startY = math.max(0, (rect.top - paddingY).floor());
-    final endX = math.min(source.width, (rect.right + paddingX).ceil());
-    final endY = math.min(source.height, (rect.bottom + paddingY).ceil());
-
-    final width = endX - startX;
-    final height = endY - startY;
-
-    if (width <= 0 || height <= 0) return null;
-
-    try {
-      return img.copyCrop(
-        source,
-        x: startX,
-        y: startY,
-        width: width,
-        height: height,
-      );
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // اختيار أفضل نتيجة - optimized single pass
-  void _selectBestResults() {
-    String? bestPin;
-    int maxPinCount = 0;
-    String? preferredPin;
-
-    // Single pass for PIN
-    for (final entry in _pinCandidates.entries) {
-      if (entry.value > maxPinCount) {
-        maxPinCount = entry.value;
-        bestPin = entry.key;
-        preferredPin = null;
-      } else if (entry.value == maxPinCount && preferredPin == null) {
-        // Check if this one has preferred start
-        final cleanPin = entry.key.replaceAll(' ', '');
-        if (_sixOrZeroRegex.hasMatch(cleanPin)) {
-          preferredPin = entry.key;
+      // Serial candidates: 12 digits, preferably lower position, different from PIN
+      if (number.length == 12 && number.value != bestPin?.value) {
+        if (bestSerial == null ||
+            (number.yPosition > 0.5 &&
+                number.confidence > bestSerial.confidence) ||
+            (number.yPosition > bestSerial.yPosition &&
+                number.confidence > bestSerial.confidence * 0.8)) {
+          bestSerial = number;
         }
       }
     }
+    final String pinNumber = bestPin != null ? _formatPin(bestPin.value) : '';
+    final String serialNumber = bestSerial != null ? bestSerial.value : '';
 
-    if (bestPin != null) {
-      pin.text = preferredPin ?? bestPin;
-      _applyTemporaryOverrides();
-    }
-
-    String? bestSerial;
-    int maxSerialCount = 0;
-
-    // Single pass for Serial
-    for (final entry in _serialCandidates.entries) {
-      if (entry.value > maxSerialCount) {
-        maxSerialCount = entry.value;
-        bestSerial = entry.key;
-      }
-    }
-
-    if (bestSerial != null) {
-      serial.text = bestSerial;
-    }
+    pin.text = pinNumber;
+    serial.text = serialNumber;
+    _applyTemporaryOverrides();
 
     if (pin.text.isNotEmpty || serial.text.isNotEmpty) {
+      textScanned = true;
       emit(ScanPinSuccess());
     }
+  }
+
+  String _formatPin(String number) {
+    if (number.isEmpty) return '';
+    if (number.length != 14) {
+      return _formatNumber(number);
+    }
+    return '${number.substring(0, 4)} ${number.substring(4, 7)} ${number.substring(7, 11)} ${number.substring(11, 14)}';
+  }
+
+  String _formatNumber(String number) {
+    if (number.isEmpty) return '';
+    return number
+        .replaceAllMapped(RegExp(r'.{1,4}'), (match) => '${match.group(0)} ')
+        .trim();
   }
 
   // Temporary override for known misread demo card; remove after client review.
@@ -835,30 +480,111 @@ class ExtractImageController extends Cubit<ExtractImageStates> {
   }
 }
 
+int _calculateOtsuThreshold(img.Image image) {
+  final List<int> histogram = List.filled(256, 0);
+  for (int y = 0; y < image.height; y++) {
+    for (int x = 0; x < image.width; x++) {
+      final pixel = image.getPixel(x, y);
+      histogram[pixel.r as int]++;
+    }
+  }
+  final int total = image.width * image.height;
+  double sum = 0;
+  for (int i = 0; i < 256; i++) {
+    sum += i * histogram[i];
+  }
+  double sumB = 0;
+  int wB = 0;
+  int wF = 0;
+  double maxVariance = 0;
+  int threshold = 0;
+  for (int i = 0; i < 256; i++) {
+    wB += histogram[i];
+    if (wB == 0) continue;
+    wF = total - wB;
+    if (wF == 0) break;
+    sumB += i * histogram[i];
+    final double mB = sumB / wB;
+    final double mF = (sum - sumB) / wF;
+    final double variance = wB * wF * (mB - mF) * (mB - mF);
+    if (variance > maxVariance) {
+      maxVariance = variance;
+      threshold = i;
+    }
+  }
+  return threshold;
+}
+
 // معالجة Grayscale في isolate منفصل للسرعة
-String? _grayscaleInIsolate(Map<String, String> params) {
+String? _preprocessInIsolate(Map<String, dynamic> params) {
   try {
-    final sourcePath = params['sourcePath']!;
-    final outputDir = params['outputDir']!;
+    final sourcePath = params['sourcePath'] as String;
+    final outputDir = params['outputDir'] as String;
+    final strategy = params['strategy'] as int;
 
     final bytes = File(sourcePath).readAsBytesSync();
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) return null;
+    img.Image? image = img.decodeImage(bytes);
+    if (image == null) return null;
 
-    // تحويل لـ Grayscale فقط
-    var processed = img.grayscale(decoded);
+    // Resize for optimal OCR
+    if (image.width > 2000) {
+      image = img.copyResize(image, width: 2000);
+    }
 
-    // تحسين بسيط وسريع
-    processed = img.adjustColor(processed, contrast: 5, brightness: 0.8);
+    switch (strategy) {
+      case 0: // High contrast grayscale
+        image = img.grayscale(image);
+        image = img.adjustColor(image, contrast: 1.8, brightness: 1.15);
+        // Apply adaptive threshold
+        final threshold = _calculateOtsuThreshold(image);
+        for (int y = 0; y < image.height; y++) {
+          for (int x = 0; x < image.width; x++) {
+            final pixel = image.getPixel(x, y);
+            final gray = pixel.r as int;
+            final newColor = gray > threshold ? 255 : 0;
+            image.setPixelRgb(x, y, newColor, newColor, newColor);
+          }
+        }
+        break;
+      case 1: // Enhanced edges
+        image = img.grayscale(image);
+        image = img.adjustColor(image, contrast: 1.5);
+        image = img.convolution(
+          image,
+          filter: [-1, -1, -1, -1, 9, -1, -1, -1, -1],
+        );
+        break;
+      case 2: // Brightness boost
+        image = img.grayscale(image);
+        image = img.adjustColor(image, contrast: 2.0, brightness: 1.2);
+        break;
+    }
 
     // حفظ مباشرة
     final outputPath =
-        '$outputDir/gray_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final outputBytes = img.encodeJpg(processed);
+        '$outputDir/proc_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final outputBytes = img.encodeJpg(image, quality: 95);
     File(outputPath).writeAsBytesSync(outputBytes, flush: true);
 
     return outputPath;
   } catch (e) {
     return null;
   }
+}
+
+class DetectedNumber {
+  final String value;
+  final String originalText;
+  final double yPosition;
+  final double confidence;
+  final int length;
+  final int detectionCount;
+  DetectedNumber({
+    required this.value,
+    required this.originalText,
+    required this.yPosition,
+    required this.confidence,
+    required this.length,
+    this.detectionCount = 1,
+  });
 }
